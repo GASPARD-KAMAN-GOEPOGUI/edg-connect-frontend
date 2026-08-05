@@ -1,0 +1,298 @@
+import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
+import { requireRole } from "@/lib/auth-guard";
+import { useRole } from "@/lib/session";
+import { useState, useCallback } from "react";
+import { useQuery, useQueries } from "@tanstack/react-query";
+import { AnimatePresence, motion } from "framer-motion";
+import { GlassCard } from "@/components/glass-card";
+import { StatusBadge, PriorityBadge } from "@/components/status-badge";
+import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
+import { fetchUser, buildAvatarUrl } from "@/lib/api/accounts";
+import { fetchTransmittedByMe } from "@/lib/api/requests";
+import { priorityLabels } from "@/lib/mock-data";
+import type { Priority } from "@/lib/mock-data";
+import { Send, Clock, AlertTriangle, RotateCcw } from "lucide-react";
+import { LayoutToggle, type LayoutMode } from "@/components/layout-toggle";
+import { format } from "date-fns";
+import { fr } from "date-fns/locale";
+import { PaginationBar } from "@/components/pagination-bar";
+import { AsyncSwap } from "@/components/async-states";
+import { cn, initialsFor } from "@/lib/utils";
+import { ticketDetailRouteForSource } from "@/lib/ticket-navigation";
+
+export const Route = createFileRoute("/app/transmitted")({
+  beforeLoad: () => requireRole("agent-support", "chief-service", "chief-departement", "director", "admin"),
+  head: () => ({ meta: [{ title: "Tickets transmis — EDG Support" }] }),
+  component: TransmittedTicketsPage,
+});
+
+const priorityDotClass: Record<Priority, string> = {
+  low: "text-muted-foreground",
+  medium: "text-info",
+  high: "text-warning-foreground dark:text-warning",
+  critical: "text-destructive",
+};
+
+function TransmittedTicketsPage() {
+  const [role] = useRole();
+  const navigate = useNavigate();
+  // Aucune source de liste dédiée dans ticket-navigation.ts pour cette page —
+  // repli volontaire sur le détail par défaut du rôle (un ticket transmis peut
+  // ne plus être dans le périmètre courant du visualiseur).
+  const detailRoute = ticketDetailRouteForSource(null, role);
+
+  const [layout, setLayout] = useState<LayoutMode>("list");
+  const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState(20);
+
+  const { data, isLoading, isError } = useQuery({
+    queryKey: ["transmitted-by-me", page, pageSize],
+    queryFn: () => fetchTransmittedByMe({ page, limit: pageSize }),
+    staleTime: 30_000,
+  });
+
+  const paged = data?.items ?? [];
+  const total = data?.total ?? 0;
+  const totalPages = data?.pages ?? 1;
+
+  // Avatars des demandeurs — un seul fetch par demandeur unique visible sur la page courante.
+  const requesterIds = [...new Set(paged.map((r) => r.requesterId).filter(Boolean))];
+  const requesterAvatarQueries = useQueries({
+    queries: requesterIds.map((id) => ({
+      queryKey: ["user", id],
+      queryFn: () => fetchUser(id),
+      staleTime: 300_000,
+    })),
+  });
+  const requesterAvatarById = new Map(
+    requesterIds.map((id, i) => [id, requesterAvatarQueries[i]?.data]),
+  );
+
+  const listState: "loading" | "empty" | "ready" = isLoading
+    ? "loading"
+    : isError || paged.length === 0
+    ? "empty"
+    : "ready";
+
+  const openTicketDetail = useCallback((id: string) => {
+    navigate({ to: detailRoute, params: { id } });
+  }, [navigate, detailRoute]);
+  const openTicketDetailFromKeyboard = useCallback((event: React.KeyboardEvent, id: string) => {
+    if (event.key === "Enter" || event.key === " ") {
+      event.preventDefault();
+      openTicketDetail(id);
+    }
+  }, [openTicketDetail]);
+
+  return (
+    <div className="mx-auto max-w-7xl space-y-6">
+
+      {/* ── En-tête ────────────────────────────────────────────────────────── */}
+      <motion.header
+        initial={{ opacity: 0, y: -8 }}
+        animate={{ opacity: 1, y: 0 }}
+        transition={{ duration: 0.4 }}
+        className="flex flex-wrap items-end justify-between gap-3"
+      >
+        <div>
+          <div className="flex items-center gap-2">
+            <Send className="h-6 w-6 text-primary" />
+            <h1 className="text-2xl font-bold tracking-tight sm:text-3xl">Tickets transmis</h1>
+          </div>
+          <p className="mt-1 text-sm text-muted-foreground">
+            Tickets dont vous avez personnellement transmis le traitement — quel que soit le porteur actuel.
+          </p>
+        </div>
+        <LayoutToggle layout={layout} onChange={setLayout} />
+      </motion.header>
+
+      {/* ── Liste / Grille ─────────────────────────────────────────────────── */}
+      <AsyncSwap
+        state={listState}
+        empty={
+          <GlassCard className="py-16 text-center">
+            <motion.div
+              className="mx-auto mb-3 grid h-14 w-14 place-items-center rounded-2xl bg-muted"
+              initial={{ scale: 0.6, opacity: 0 }}
+              animate={{ scale: 1, opacity: 1 }}
+              transition={{ type: "spring", stiffness: 260, damping: 18 }}
+            >
+              {isError ? (
+                <AlertTriangle className="h-6 w-6 text-muted-foreground" />
+              ) : (
+                <Send className="h-6 w-6 text-muted-foreground" />
+              )}
+            </motion.div>
+            <h3 className="font-semibold">
+              {isError ? "Erreur de chargement" : "Aucun ticket transmis"}
+            </h3>
+            <p className="mt-1 text-sm text-muted-foreground">
+              {isError
+                ? "Impossible de charger vos tickets transmis."
+                : "Vous n'avez encore transmis le traitement d'aucun ticket."}
+            </p>
+          </GlassCard>
+        }
+      >
+        <>
+          {layout === "list" ? (
+            /* ── Vue liste ──────────────────────────────────────────────── */
+            <GlassCard className="overflow-hidden p-0">
+              <AnimatePresence mode="popLayout" initial={false}>
+                {paged.map((r, i) => {
+                  const slaOver = r.slaElapsed > r.slaHours;
+                  const slaLeft = Math.max(0, r.slaHours - r.slaElapsed);
+                  return (
+                    <motion.div
+                      key={r.id}
+                      layout
+                      initial={{ opacity: 0, y: 10 }}
+                      animate={{ opacity: 1, y: 0 }}
+                      exit={{ opacity: 0, y: -6 }}
+                      transition={{ duration: 0.3, delay: i * 0.03 }}
+                      role="link"
+                      tabIndex={0}
+                      onClick={() => openTicketDetail(r.id)}
+                      onKeyDown={(event) => openTicketDetailFromKeyboard(event, r.id)}
+                      className={cn(
+                        "flex cursor-pointer items-start gap-4 border-b px-5 py-4 last:border-0 transition-colors hover:bg-background/50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/40",
+                        r.priority === "critical"
+                          ? "border-destructive/30 bg-destructive/3"
+                          : r.status === "reopened"
+                          ? "border-amber-500/30 bg-amber-500/3"
+                          : slaOver
+                          ? "border-orange-400/30"
+                          : "border-border/30",
+                      )}
+                    >
+                      <div className="min-w-0 flex-1 space-y-1.5">
+                        <div className="flex flex-wrap items-center gap-2">
+                          <Link
+                            to={detailRoute}
+                            params={{ id: r.id }}
+                            className="font-mono text-[11px] text-primary hover:underline"
+                          >
+                            {r.ref}
+                          </Link>
+                          <PriorityBadge priority={r.priority} />
+                          <StatusBadge status={r.status} />
+                          {r.status === "reopened" && (
+                            <span className="inline-flex items-center gap-1 rounded-full bg-amber-500/15 px-2 py-0.5 text-[10px] font-semibold text-amber-600 dark:text-amber-400">
+                              <RotateCcw className="h-2.5 w-2.5" /> Réouvert
+                            </span>
+                          )}
+                        </div>
+                        <Link
+                          to={detailRoute}
+                          params={{ id: r.id }}
+                          className="block font-semibold leading-snug hover:text-primary"
+                        >
+                          {r.title}
+                        </Link>
+                        {r.description && (
+                          <p className="line-clamp-1 text-xs text-muted-foreground">{r.description}</p>
+                        )}
+                        <div className="text-xs text-muted-foreground">
+                          {r.requesterName} · {format(new Date(r.createdAt), "d MMM yyyy", { locale: fr })}
+                        </div>
+                      </div>
+
+                      <div className="flex shrink-0 flex-col items-end gap-2">
+                        <div className={cn("flex items-center gap-1 text-xs font-medium", slaOver ? "text-destructive" : "text-muted-foreground")}>
+                          <Clock className="h-3.5 w-3.5" />
+                          {slaOver ? "Délai dépassé" : `${slaLeft}h restantes`}
+                        </div>
+                      </div>
+                    </motion.div>
+                  );
+                })}
+              </AnimatePresence>
+            </GlassCard>
+          ) : (
+            /* ── Vue grille ─────────────────────────────────────────────── */
+            <motion.div layout className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+              <AnimatePresence mode="popLayout" initial={false}>
+                {paged.map((r, i) => {
+                  const slaOver = r.slaElapsed > r.slaHours;
+                  const slaLeft = Math.max(0, r.slaHours - r.slaElapsed);
+                  return (
+                    <motion.div
+                      key={r.id}
+                      layout
+                      initial={{ opacity: 0, scale: 0.96 }}
+                      animate={{ opacity: 1, scale: 1 }}
+                      exit={{ opacity: 0, scale: 0.94 }}
+                      transition={{ duration: 0.3, delay: i * 0.04 }}
+                      whileHover={{ y: -3 }}
+                    >
+                      <GlassCard className={cn(
+                        "flex h-full min-h-[196px] cursor-pointer flex-col gap-3 p-4 transition-shadow hover:shadow-xl focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/40",
+                        r.priority === "critical" && "border-destructive/40 bg-destructive/3",
+                        r.status === "reopened"   && "border-amber-500/40 bg-amber-500/3",
+                      )}
+                        role="link"
+                        tabIndex={0}
+                        onClick={() => openTicketDetail(r.id)}
+                        onKeyDown={(event) => openTicketDetailFromKeyboard(event, r.id)}
+                      >
+                        <div className="flex items-start justify-between gap-2">
+                          <div className="flex flex-wrap items-center gap-1.5">
+                            <StatusBadge status={r.status} />
+                            {r.status === "reopened" && (
+                              <span className="inline-flex items-center gap-1 rounded-full bg-amber-500/15 px-1.5 py-0.5 text-[10px] font-semibold text-amber-600 dark:text-amber-400">
+                                <RotateCcw className="h-2.5 w-2.5" />
+                              </span>
+                            )}
+                          </div>
+                          <div className="flex flex-col items-end gap-1">
+                            <Avatar className="h-6 w-6 border border-border/60">
+                              <AvatarImage src={buildAvatarUrl(requesterAvatarById.get(r.requesterId)?.avatar)} alt={r.requesterName} />
+                              <AvatarFallback className="bg-primary/10 text-[10px] font-bold text-primary">
+                                {initialsFor(r.requesterName)}
+                              </AvatarFallback>
+                            </Avatar>
+                            <div className={cn("flex items-center gap-1 text-xs font-medium shrink-0", slaOver ? "text-destructive" : "text-muted-foreground")}>
+                              <Clock className="h-3 w-3" />
+                              {slaOver ? "Délai !" : `${slaLeft}h`}
+                            </div>
+                          </div>
+                        </div>
+
+                        <Link to={detailRoute} params={{ id: r.id }} className="hover:text-primary">
+                          <p className="line-clamp-2 font-semibold leading-snug">{r.title}</p>
+                        </Link>
+                        <div className={cn("flex items-center gap-1.5 text-xs font-medium", priorityDotClass[r.priority])}>
+                          <span className="h-2 w-2 shrink-0 rounded-full bg-current" />
+                          {priorityLabels[r.priority]}
+                        </div>
+
+                        <div className="flex-1" />
+                        <div className="space-y-1">
+                          <div className="text-xs text-muted-foreground">{r.requesterName}</div>
+                          <div className="text-xs text-muted-foreground">
+                            {format(new Date(r.createdAt), "d MMM yyyy", { locale: fr })}
+                          </div>
+                          <p className="font-mono text-[11px] text-muted-foreground/60">Réf. {r.ref}</p>
+                        </div>
+
+                      </GlassCard>
+                    </motion.div>
+                  );
+                })}
+              </AnimatePresence>
+            </motion.div>
+          )}
+
+          <PaginationBar
+            page={page}
+            totalPages={totalPages}
+            total={total}
+            pageSize={pageSize}
+            onChange={setPage}
+            onPageSizeChange={(s) => { setPageSize(s); setPage(1); }}
+          />
+        </>
+      </AsyncSwap>
+    </div>
+  );
+}

@@ -19,7 +19,7 @@ import {
 } from "@/components/ui/select";
 import { fetchRequests } from "@/lib/api/requests";
 import { priorityLabels, statusLabels } from "@/lib/mock-data";
-import type { RequestStatus, Priority } from "@/lib/mock-data";
+import type { RequestItem, RequestStatus, Priority } from "@/lib/mock-data";
 import {
   Ticket, Clock, Search, Inbox,
   ShieldAlert, AlertTriangle, CheckCircle2, RotateCcw, TrendingUp,
@@ -33,7 +33,7 @@ import { useSessionState } from "@/lib/use-session-state";
 import { cn, initialsFor } from "@/lib/utils";
 
 export const Route = createFileRoute("/app/my-tickets")({
-  beforeLoad: () => requireRole("agent-support", "chief-service", "admin"),
+  beforeLoad: () => requireRole("agent-support", "chief-service", "chief-departement", "director", "admin"),
   head: () => ({ meta: [{ title: "Mes tickets — EDG Support" }] }),
   component: MyTicketsPage,
 });
@@ -42,6 +42,7 @@ const ACTIVE_STATUSES: RequestStatus[] = [
   "new", "qualifying", "qualified", "assigned",
   "in_progress", "pending", "escalated", "reopened",
 ];
+const TERMINAL_STATUSES = "resolved,closed,cancelled,rejected";
 
 const priorityDotClass: Record<Priority, string> = {
   low: "text-muted-foreground",
@@ -61,6 +62,7 @@ function MyTicketsPage() {
   const [layout, setLayout] = useState<LayoutMode>("grid");
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(20);
+  const currentUserId = sessionUser?.id ? String(sessionUser.id) : "";
 
   useEffect(() => {
     const t = setTimeout(() => setDebouncedSearch(search), 400);
@@ -68,8 +70,25 @@ function MyTicketsPage() {
   }, [search]);
   useEffect(() => { setPage(1); }, [filterStatus, filterPriority, debouncedSearch]);
 
+  // Ancien raccourci "Réouvertures" : il écrivait mt:status=reopened en session.
+  // Depuis son retrait, l'ouverture normale de Ma boîte doit revenir à tous les statuts.
+  useEffect(() => {
+    const status = new URLSearchParams(window.location.search).get("status");
+    if (status) {
+      setFilterStatus(status);
+      return;
+    }
+    const cleanupKey = "mt:reopened-shortcut-cleaned";
+    if (filterStatus === "reopened" && sessionStorage.getItem(cleanupKey) !== "1") {
+      setFilterStatus("all");
+      sessionStorage.setItem(cleanupKey, "1");
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   const baseFilters = {
-    assignee_id: sessionUser?.id,
+    assignee_id: currentUserId,
+    exclude_status: TERMINAL_STATUSES,
     ...(filterPriority !== "all" && { priority: filterPriority }),
     ...(filterStatus !== "all" && { request_status: filterStatus }),
     ...(debouncedSearch && { search: debouncedSearch }),
@@ -80,18 +99,20 @@ function MyTicketsPage() {
     queryKey: ["my-tickets", baseFilters, page, pageSize],
     queryFn: () => fetchRequests({ ...baseFilters, page, limit: pageSize }),
     staleTime: 30_000,
-    enabled: !!sessionUser?.id,
+    enabled: !!currentUserId,
   });
 
   // Requête stats : workload affectée à l'agent connecté.
   const { data: statsData } = useQuery({
-    queryKey: ["my-tickets-stats", sessionUser?.id],
-    queryFn: () => fetchRequests({ assignee_id: sessionUser!.id, limit: 1000 }),
+    queryKey: ["my-tickets-stats", currentUserId],
+    queryFn: () => fetchRequests({ assignee_id: currentUserId, exclude_status: TERMINAL_STATUSES, limit: 1000 }),
     staleTime: 60_000,
-    enabled: !!sessionUser?.id,
+    enabled: !!currentUserId,
   });
 
-  const allItems = data?.items ?? [];
+  const onlyMyAssignedTickets = (items?: RequestItem[]) =>
+    (items ?? []).filter((r) => r.assigneeId === currentUserId);
+  const allItems = onlyMyAssignedTickets(data?.items);
   const paged = allItems;
 
   const total = data?.total ?? 0;
@@ -110,7 +131,7 @@ function MyTicketsPage() {
     requesterIds.map((id, i) => [id, requesterAvatarQueries[i]?.data]),
   );
 
-  const assignedTickets = statsData?.items ?? [];
+  const assignedTickets = onlyMyAssignedTickets(statsData?.items);
   const activeAssignedTickets = assignedTickets.filter((r) => ACTIVE_STATUSES.includes(r.status));
   const resolvedTickets = assignedTickets.filter((r) => r.status === "resolved" || r.status === "closed");
   const measuredSlaTickets = assignedTickets.filter((r) => r.slaHours > 0);
