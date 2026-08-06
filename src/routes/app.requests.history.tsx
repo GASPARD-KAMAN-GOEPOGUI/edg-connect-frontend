@@ -394,7 +394,7 @@ function RequestHistory() {
                   transition={{ duration: 0.35, delay: i * 0.04, ease: [0.22, 1, 0.36, 1] }}
                   whileHover={{ y: -3 }}
                 >
-                  <Link to="/app/requests/$id" params={{ id: r.id }} className="block">
+                  <Link to="/app/history/tickets/$id" params={{ id: r.id }} className="block">
                     <HistoryCard r={r} requesterAvatar={sessionUser?.avatar} />
                   </Link>
                 </motion.div>
@@ -429,7 +429,7 @@ function RequestHistory() {
                           transition={{ duration: 0.3, delay: i * 0.03 }}
                           className="border-t border-border/40 transition-colors hover:bg-background/50 cursor-pointer"
                           onClick={() =>
-                            navigate({ to: "/app/requests/$id", params: { id: r.id } })
+                            navigate({ to: "/app/history/tickets/$id", params: { id: r.id } })
                           }
                         >
                           <td className="px-5 py-4">
@@ -475,7 +475,7 @@ function RequestHistory() {
                     transition={{ duration: 0.3, delay: i * 0.04 }}
                     whileHover={{ y: -3 }}
                   >
-                    <Link to="/app/requests/$id" params={{ id: r.id }} className="block h-full">
+                    <Link to="/app/history/tickets/$id" params={{ id: r.id }} className="block h-full">
                       <HistoryCard r={r} requesterAvatar={sessionUser?.avatar} />
                     </Link>
                   </motion.div>
